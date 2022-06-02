@@ -1,0 +1,7 @@
+name: deconvolution
+channels:
+  - bioconda
+  - conda-forge
+dependencies:
+  - r-immunedeconv
+  - r-tidyverse

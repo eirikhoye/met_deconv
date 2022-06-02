@@ -1,0 +1,13 @@
+rule deconvolute:
+    input:
+        base_dir = '/Users/eirikhoy/Dropbox/projects/met_deconv',
+        infile = 'data/count_matrix_normalScale.xlsx'
+    params:
+        method = 'quantiseq',
+
+    output:
+        outfile = 'results/count_matrix_normalscale_qts.tsv'
+    conda:
+        'envs/immunedeconv.yml'
+    script:
+        'scripts/run_deconvolute.R'
