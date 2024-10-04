@@ -1,0 +1,43 @@
+# Set base directory
+base_dir <- "/home/jcdenton/quantiseq/"
+
+infile <- "tpm_matrices_for_Erik/PMCRC_TPM_18072022.csv"
+outpath <- "output/PMCRC_TPM_18072022"
+
+dir.create(paste(base_dir, outpath, sep=''))
+# Load libraries --------------------------------------------------------------------------
+library(immunedeconv)
+set_cibersort_binary(paste(base_dir, "src/CIBERSORT.R", sep=""))
+set_cibersort_mat(paste(base_dir, "src/LM22.txt", sep=""))
+
+# Load data -------------------------------------------------------------------------------
+setwd(base_dir)
+gene_expression_matrix_A <- read.csv(paste(base_dir, infile, sep=""), sep=",")
+gene_expression_matrix_A <- gene_expression_matrix_A[!duplicated(gene_expression_matrix_A[c('Gene')]),]
+
+rownames(gene_expression_matrix_A) <- gene_expression_matrix_A$Gene
+gene_expression_matrix_A$ENSG <- NULL
+gene_expression_matrix_A$Gene <- NULL
+
+
+# Run methods and write tsv ---------------------------------------------------------------
+res_qts_A <- immunedeconv::deconvolute(gene_expression_matrix_A, "quantiseq")
+readr::write_tsv(res_qts_A, path = paste(base_dir, outpath, '/res_qts.tsv', sep=""))
+
+res_cbs_A <- immunedeconv::deconvolute(gene_expression_matrix_A, "cibersort")
+readr::write_tsv(res_cbs_A, path = paste(base_dir, outpath, '/res_cbs.tsv', sep=""))
+
+res_cba_A <- immunedeconv::deconvolute(gene_expression_matrix_A, "cibersort_abs")
+readr::write_tsv(res_cba_A, path = paste(base_dir, outpath, '/res_cba.tsv', sep=""))
+
+res_mcp_A <- immunedeconv::deconvolute(gene_expression_matrix_A, "mcp_counter")
+readr::write_tsv(res_mcp_A, path = paste(base_dir, outpath, '/res_mcp.tsv', sep=""))
+
+res_xcl_A <- immunedeconv::deconvolute(gene_expression_matrix_A, "xcell")
+readr::write_tsv(res_xcl_A, path = paste(base_dir, outpath, '/res_xcl.tsv', sep=""))
+
+res_epi_A <- immunedeconv::deconvolute(gene_expression_matrix_A, "epic")
+readr::write_tsv(res_epi_A, path = paste(base_dir, outpath, '/res_epi.tsv', sep=""))
+
+res_tim_A <- immunedeconv::deconvolute(gene_expression_matrix_A, 'timer', indications = rep('coad', length(colnames(gene_expression_matrix_A))))
+readr::write_tsv(res_tim_A, path = paste(base_dir, outpath, '/res_tim.tsv', sep=""))
