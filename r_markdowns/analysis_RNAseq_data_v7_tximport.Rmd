@@ -1,0 +1,249 @@
+---
+title: "RNAseq Analysis"
+author: "Eirik Høye"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(DESeq2)
+library(readxl)
+library(sva)
+library(FactoMineR)
+library(factoextra)
+library(ggpubr)
+library(tximportData)
+library(tximport)
+library(GenomicFeatures)
+library(RColorBrewer)
+library(rtracklayer)
+
+```
+
+```{r}
+proj_path <- '~/Dropbox/deconv_metastasis/'
+```
+
+Load Metadata
+
+```{r}
+metadata <- read_tsv("~/Dropbox/deconv_metastasis/data/metadata/metadata_v2.txt")
+head(metadata)
+```
+
+Import GTF File and Extract Gene Information
+
+```{r}
+dir <- system.file("extdata", package = "tximportData")
+gtf <- import(file.path(dir, 'gencode.v46.chr_patch_hapl_scaff.annotation.gff3.gz'))
+protein_coding_genes <- gtf[gtf$gene_type == "protein_coding"]
+
+txdb <- makeTxDbFromGRanges(protein_coding_genes)
+gene_info <- data.frame(
+  gene_id = mcols(protein_coding_genes)$gene_id,
+  gene_name = mcols(protein_coding_genes)$gene_name
+)
+gene_info <- unique(gene_info)
+head(gene_info)
+```
+
+Create tx2gene Mapping
+
+```{r}
+k <- keys(txdb, keytype = "TXNAME")
+tx2gene <- select(txdb, k, "GENEID", "TXNAME")
+head(tx2gene)
+```
+
+Load and Import Count Data
+GCF0506
+
+```{r}
+dir_GCF0506 <- paste0(proj_path, "data/counts/data_for_Eirik/GCF0506")
+samples_GCF0506 <- read.table(file.path(dir_GCF0506, "sample_info_updated.txt"), header=TRUE)
+files_GCF0506 <- file.path(dir_GCF0506, "tx_import", samples_GCF0506$name, "quant.sf")
+names(files_GCF0506) <- samples_GCF0506$name
+all(file.exists(files_GCF0506))
+txi_GCF0506 <- tximport(files_GCF0506, type = "salmon", tx2gene = tx2gene)
+GCF0506_counts <- as.data.frame(txi_GCF0506$counts)
+replicate_names <- colnames(GCF0506_counts)
+```
+
+GCF0620
+
+```{r}
+dir_GCF0620 <- paste0(proj_path, "data/counts/data_for_Eirik/GCF0620")
+samples_GCF0620 <- read.table(file.path(dir_GCF0620, "sample_info.txt"), header=TRUE)
+files_GCF0620 <- file.path(dir_GCF0620, "tx_import", samples_GCF0620$name, "quant.sf")
+names(files_GCF0620) <- samples_GCF0620$name
+all(file.exists(files_GCF0620))
+txi_GCF0620 <- tximport(files_GCF0620, type = "salmon", tx2gene = tx2gene)
+GCF0620_counts <- as.data.frame(txi_GCF0620$counts)
+replicate_names <- colnames(GCF0620_counts)
+
+```
+
+Merge Count Matrices
+
+```{r}
+counts <- merge(GCF0620_counts, GCF0506_counts, by=0)
+rownames(counts) <- counts$Row.names
+counts$Row.names <- NULL
+```
+
+Prepare Metadata for DESeq2
+
+```{r}
+coldata <- as.data.frame(metadata)
+coldata <- coldata[order(rownames(coldata)), ]
+coldata$tissue_type <- as.factor(coldata$tissue_type)
+coldata$batch <- as.factor(coldata$batch)
+coldata$TC_rank <- as.factor(coldata$TC_rank)
+coldata_smp <- rbind(samples_GCF0620, samples_GCF0506)
+coldata_smp$smp <- str_replace(coldata_smp$smp, '-', '_')
+coldata_smp$smp <- str_replace(coldata_smp$smp, '-', '_')
+coldata <- left_join(coldata_smp, coldata, by=c('smp' = 'sample_name'))
+rownames(coldata) <- coldata$name
+coldata$name <- NULL
+
+# remove the samples that were not derived from colorectal cancer
+only_include <- rownames(coldata %>% filter(!smp %in% c("PCB_714", "PC_301")))
+counts <- counts[only_include]
+coldata <- coldata %>% filter(!smp %in% c("PCB_714", "PC_301"))
+```
+
+```{r}
+print(dim(coldata))
+```
+
+```{r}
+print(dim(counts))
+```
+
+DESeq2 Analysis
+
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = round(counts),
+                              colData = coldata,
+                              design = ~ tissue_type)
+dds <- DESeq(dds)
+summary(dds)
+```
+
+Visualize PCA
+
+```{r}
+vst <- vst(dds, blind=FALSE)
+plotPCA(vst, intgroup=c('tissue_type', 'batch'))
+```
+
+Collapse Replicates and Perform PCA
+
+```{R}
+dds$run <- colnames(dds)
+ddsColl <- collapseReplicates(dds, dds$smp, dds$run)
+vstColl <- vst(ddsColl, blind=FALSE)
+plotPCA(vstColl, intgroup=c('tissue_type', 'batch'))
+```
+
+Compae PM datasets from different sequencing runs
+
+```{r}
+ddsPM <- DESeqDataSetFromMatrix(countData = round(counts), colData = coldata, design = ~ batch)
+ddsPM <- ddsPM[, ddsPM$tissue_type == 'PM']
+ddsPM$run <- colnames(ddsPM)
+ddsPMColl <- collapseReplicates(ddsPM, ddsPM$smp, ddsPM$run)
+ddsPMColl <- DESeq(ddsPMColl)
+vstPMColl <- vst(ddsPMColl, blind=FALSE)
+
+```
+
+PCA and Differential Gene Expression Analysis
+
+```{r}
+vstPMColl_PCA <- PCA(t(assay(vstPMColl)), graph=FALSE)
+
+axes <- c(1,2)
+vstPMColl$batch <- factor(vstPMColl$batch, levels = c("GCF0620", "GCF0506"))
+
+p1 <- fviz_pca_ind(vstPMColl_PCA,
+             axes = axes,
+             palette = 'aaas',
+             geom.ind = 'point',
+             pointshape = 21,
+             pointsize = 2.5,
+             fill.ind = vstPMColl$batch,
+             col.ind = 'black'
+            ) +
+  ggtitle("") +
+  labs(fill="Sequencing run") +
+  xlab("Dimension 1") +
+  ylab("Dimension 2") +
+  theme(legend.position = "bottom")
+
+alpha_level <- 0.1
+
+res <- results(ddsPMColl, name="batch_GCF0620_vs_GCF0506", alpha=alpha_level)
+resOrdered <- res[ order(res$padj) , ]
+resSig <- subset(resOrdered, padj < alpha_level)
+
+p2 <- resOrdered %>% as.data.frame() %>%
+  mutate(Gene = rownames(.)) %>% as_tibble() %>%
+  mutate(Significant = case_when( padj < alpha_level ~ 'yes',
+                                  TRUE ~ 'no'
+                                )) %>%
+  mutate(sig_lab = case_when( padj < alpha_level & abs(log2FoldChange) > 3 ~ Gene,
+                              TRUE ~ '')) %>%
+  ggplot(aes(x=log2FoldChange, y=-log10(padj), fill = Significant)) +
+  geom_point(shape=21) +
+  theme_minimal() +
+  geom_hline(yintercept = -log10(alpha_level), linetype = 'dashed',
+             color = 'red') +
+  ggtitle("") +
+  theme(plot.title = element_text(face = "bold"), legend.position = "none") +
+  scale_fill_manual(values=c("black", "red"))
+p <- ggarrange(p1, p2)
+p
+```
+
+
+```{r}
+summary(res)
+
+```
+
+Top 15 Differentially Expressed Genes
+
+```{r}
+set <- resOrdered[1:15, ] 
+set['Gene_name'] = rownames(set)
+set <- set %>% as.tibble()
+set <- transform(set, lower_bound = log2FoldChange - 1.96 * lfcSE,
+                       upper_bound = log2FoldChange + 1.96 * lfcSE) %>% 
+  merge(gene_info, by.x='Gene_name', by.y='gene_id') %>% arrange(padj) %>%
+  mutate(padj = as.factor(padj))
+```
+
+Bar Plot of Top Genes
+
+```{r}
+
+colors <- c(brewer.pal(12, "Paired"), brewer.pal(3, "Set2"))
+
+set %>%
+  ggplot(aes(x=log2FoldChange, y=Gene_name, fill=gene_name)) +
+  geom_bar(stat = 'identity') +
+  geom_errorbarh(aes(xmin = lower_bound, xmax = upper_bound), height = 0) +
+  scale_fill_manual(values = colors) +
+  theme_classic()
+```
+
+
+
+
+
+
+
+
