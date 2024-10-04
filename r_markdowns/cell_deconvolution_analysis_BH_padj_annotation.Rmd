@@ -1,0 +1,557 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+```{r message=FALSE, warning=FALSE}
+proj_path <- '~/Dropbox/deconv_metastasis/'
+library(tidyverse)
+library(tidyverse)
+library(readxl)
+#library(sva)
+library(FactoMineR)
+library(factoextra)
+library(ggpubr)
+library(viridis)
+library(ggridges)
+library(rstatix)
+```
+
+```{R message=FALSE, warning=FALSE}
+
+merge_wide_to_long <- function(batch_list, first_col = 'cell_type', convolution_type, metadata) {
+  merged_list <- NULL
+  
+  for (batch in names(batch_list)) {
+    batch_name <- unlist(strsplit(batch, "_"))[1]
+    new_row <- c("batch_name", rep(batch_name, length(colnames(batch_list[[batch]])) - 1))
+    
+    if (is.null(merged_list)) {
+      merged_list <- rbind(batch_list[[batch]], new_row)
+    } else {
+      merged_list_ <- batch_list[[batch]][, -which(names(batch_list[[batch]]) == first_col)]
+      merged_list <- bind_cols(merged_list, rbind(merged_list_, new_row))
+    }
+  }
+  
+  merged_long <- merged_list %>% 
+    pivot_longer(cols = -cell_type, names_to = 'sample_name', values_to = 'fraction') %>%
+    mutate(convolution = convolution_type) %>% 
+    left_join(metadata) %>%
+    mutate(fraction = as.numeric(fraction))
+  
+  return(merged_long)
+}
+
+
+
+
+compare_means <- function(data, ind_var) {
+  stat_test = data %>%
+    group_by(cell_type) %>%
+    wilcox_test(as.formula(paste('fraction', '~', ind_var))) %>%
+    adjust_pvalue(method = 'BH') %>%
+    add_significance(
+      cutpoints = c(0, 1e-04, 0.001, 0.01, 0.05, 1),
+      symbols = c("****", "***", "**", "*", "ns")
+    ) %>%
+    add_xy_position(x = ind_var)
+  return(stat_test)
+}
+
+pull_sig <- function(stat_test, p_threshold = 0.1){
+  sig <- stat_test %>% 
+    filter(p.adj < p_threshold) %>% 
+    pull(cell_type) %>% 
+    unique()
+  return(sig)
+}
+
+
+plot_boxplot <- function(data, ind_var, nrow = 1, comparison = list(), only_significant = list(), custom_palette = NULL, 
+                         save_path = NULL, fig_width = 6, fig_height = 4, stat_test = NULL) {
+  
+  if (length(only_significant) > 0) {
+    data <- data %>%
+      filter(cell_type %in% only_significant)
+  }
+  
+  if ("Uncharacterized" %in% only_significant) {
+      data = data %>% mutate(cell_type = as.factor(cell_type)) %>%
+      mutate(cell_type=relevel(cell_type, ref='Uncharacterized'))
+  }
+  
+  if (is.null(custom_palette)) {
+    p <- ggboxplot(
+      data, x=ind_var, y='fraction', fill=ind_var,
+      facet.by = 'cell_type', nrow=nrow, scales='free_y') + 
+      scale_fill_brewer(palette = 'Paired') +
+      xlab("") +
+      ylab("Fraction") +
+      theme_minimal() +
+      theme(legend.position = 'none') +
+      geom_jitter(width = 0.05, size = 1)  
+    
+    
+  } else {
+    p <- ggboxplot(
+      data, x=ind_var, y='fraction', fill=ind_var,
+      facet.by = 'cell_type', nrow=nrow, scales='free_y') + 
+      scale_fill_manual(values = custom_palette) +
+      xlab("") +
+      ylab("Fraction") +
+      theme_minimal() +
+      theme(legend.position = 'none') +
+      geom_jitter(width = 0.05, size = 1)  
+    
+    
+    
+    
+    
+  }
+  
+  if (length(comparison) > 0) {
+    p <- p + stat_pvalue_manual(stat_test, 
+                                label = "p = {scales::pvalue(p.adj)} {p.adj.signif}") +
+             scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+    
+    #p <- p + stat_compare_means(aes(label=..p.adj..), comparisons = comparison, method = 'wilcox') +
+    #  theme_minimal() +
+    #  theme(legend.position = 'none')
+    #p <- p + geom_pwc(
+    #  aes_string(group = ind_var), 
+    #  tip.length = 0, 
+    #  method = 'wilcox_test', 
+    #  hide.ns = FALSE
+    #)
+    #p <- ggadjust_pvalue(
+    #  p, p.adjust.method = 'BH',
+    #  label = "{p.adj.format}{p.adj.signif}"
+    #)
+    
+  }
+  
+  if (!is.null(save_path)) {
+    ggsave(filename = save_path, plot = p, width = fig_width, height = fig_height)
+  }
+  
+  return(p)
+}
+
+
+
+
+```
+
+```{r message=FALSE, warning=FALSE}
+GCF0620_qts <- read_tsv(paste0(proj_path, 'data/immdeconv_output/mCRC_TPM_18072022/res_qts.tsv'), show_col_types = FALSE)
+GCF0620_cbs <- read_tsv(paste0(proj_path, 'data/immdeconv_output/mCRC_TPM_18072022/res_cbs.tsv'), show_col_types = FALSE)
+GCF0620_cba <- read_tsv(paste0(proj_path, 'data/immdeconv_output/mCRC_TPM_18072022/res_cba.tsv'), show_col_types = FALSE)
+GCF0620_xlc <- read_tsv(paste0(proj_path, 'data/immdeconv_output/mCRC_TPM_18072022/res_xcl.tsv'), show_col_types = FALSE)
+GCF0620_tim <- read_tsv(paste0(proj_path, 'data/immdeconv_output/mCRC_TPM_18072022/res_tim.tsv'), show_col_types = FALSE)
+GCF0620_mcp <- read_tsv(paste0(proj_path, 'data/immdeconv_output/mCRC_TPM_18072022/res_mcp.tsv'), show_col_types = FALSE)
+GCF0620_epi <- read_tsv(paste0(proj_path, 'data/immdeconv_output/mCRC_TPM_18072022/res_epi.tsv'), show_col_types = FALSE)
+
+GCF0506_qts <- read_tsv(paste0(proj_path, 'data/immdeconv_output/PMCRC_TPM_18072022/res_qts.tsv'), show_col_types = FALSE)
+GCF0506_cbs <- read_tsv(paste0(proj_path, 'data/immdeconv_output/PMCRC_TPM_18072022/res_cbs.tsv'), show_col_types = FALSE)
+GCF0506_cba <- read_tsv(paste0(proj_path, 'data/immdeconv_output/PMCRC_TPM_18072022/res_cba.tsv'), show_col_types = FALSE)
+GCF0506_xlc <- read_tsv(paste0(proj_path, 'data/immdeconv_output/PMCRC_TPM_18072022/res_xcl.tsv'), show_col_types = FALSE)
+GCF0506_tim <- read_tsv(paste0(proj_path, 'data/immdeconv_output/PMCRC_TPM_18072022/res_tim.tsv'), show_col_types = FALSE)
+GCF0506_mcp <- read_tsv(paste0(proj_path, 'data/immdeconv_output/PMCRC_TPM_18072022/res_mcp.tsv'), show_col_types = FALSE)
+GCF0506_epi <- read_tsv(paste0(proj_path, 'data/immdeconv_output/PMCRC_TPM_18072022/res_epi.tsv'), show_col_types = FALSE)
+
+metadata <- read_tsv("~/Dropbox/deconv_metastasis/data/metadata/metadata_v2.txt")
+
+qts <- merge_wide_to_long(list('GCF0620_qts'=GCF0620_qts, 'GCF0506_qts'=GCF0506_qts), convolution_type = 'qts', metadata=metadata) %>% filter(!cell_type == 'batch_name')
+cbs <- merge_wide_to_long(list('GCF0620_cbs'=GCF0620_cbs, 'GCF0506_cbs'=GCF0506_cbs), convolution_type = 'cbs', metadata=metadata) %>% filter(!cell_type == 'batch_name')
+cba <- merge_wide_to_long(list('GCF0620_cba'=GCF0620_cba, 'GCF0506_cba'=GCF0506_cba), convolution_type = 'cba', metadata=metadata) %>% filter(!cell_type == 'batch_name')
+xlc <- merge_wide_to_long(list('GCF0620_xlc'=GCF0620_xlc, 'GCF0506_xlc'=GCF0506_xlc), convolution_type = 'xlc', metadata=metadata) %>% filter(!cell_type == 'batch_name')
+tim <- merge_wide_to_long(list('GCF0620_tim'=GCF0620_tim, 'GCF0506_tim'=GCF0506_tim), convolution_type = 'tim', metadata=metadata) %>% filter(!cell_type == 'batch_name')
+mcp <- merge_wide_to_long(list('GCF0620_mcp'=GCF0620_mcp, 'GCF0506_mcp'=GCF0506_mcp), convolution_type = 'mcp', metadata=metadata) %>% filter(!cell_type == 'batch_name')
+epi <- merge_wide_to_long(list('GCF0620_epi'=GCF0620_epi, 'GCF0506_epi'=GCF0506_epi), convolution_type = 'epi', metadata=metadata) %>% filter(!cell_type == 'batch_name')
+
+```
+
+
+
+
+
+
+
+
+
+### EPIC GCF0506 and GCF0620 PC batch effects
+```{r}
+compare_GCF0506_vs_GCF0620 <- epi %>%
+  filter(batch %in% c("GCF0506", "GCF0620")) %>%
+  filter(tissue_type == 'PM') %>%
+    mutate(cell_type = case_when(
+    cell_type == "Cancer associated fibroblast" ~ "CAFs",
+    cell_type == "B cell" ~ "B cells",
+    cell_type == "Endothelial cell" ~ "Endothelial cells",
+    cell_type == "uncharacterized cell" ~ "Uncharacterized",
+    cell_type == "T cell CD4+" ~ "CD4+",
+    cell_type == "T cell CD8+" ~ "CD8+",
+    TRUE ~ cell_type
+  )) %>% 
+  group_by(batch) %>%
+  mutate(n = length(unique(sample_name))) %>%
+  ungroup() %>%
+  mutate(batch = paste0(batch, "\n", "n=", n)) %>% 
+  mutate(batch = as.factor(batch))
+
+compare_GCF0506_vs_GCF0620
+```
+
+
+
+```{r}
+stat_test <- compare_means(compare_GCF0506_vs_GCF0620, 'batch')
+stat_test
+```
+
+
+```{r fig.height=4, fig.width=20}
+my_comparisons <- list(c("GCF0506\nn=30", "GCF0620\nn=5"))
+
+plot_boxplot(compare_GCF0506_vs_GCF0620, 'batch', nrow=1, my_comparisons, custom_palette=c('black', 'red'), save_path = "/Users/eirikhoy/Dropbox/deconv_metastasis/figures/EPIC_cell_fractions_impact_sequencing_run_v2.pdf", fig_width = 15, fig_height = 4, stat_test = stat_test)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+### GCF0620 Metastatic Sites
+
+
+
+```{r}
+compare_tissue_GCF0620 <- epi %>%
+  filter(batch == "GCF0620") %>%
+    mutate(cell_type = case_when(
+    cell_type == "Cancer associated fibroblast" ~ "CAFs",
+    cell_type == "B cell" ~ "B cells",
+    cell_type == "Endothelial cell" ~ "Endothelial cells",
+    cell_type == "uncharacterized cell" ~ "Uncharacterized",
+    TRUE ~ cell_type
+  )) %>% 
+  group_by(tissue_type) %>%
+  mutate(n = length(unique(sample_name))) %>%
+  ungroup() %>%
+  mutate(tissue_type = paste0(tissue_type, "\n", "n=", n)) %>% 
+  mutate(tissue_type = as.factor(tissue_type))
+
+compare_tissue_GCF0620
+```
+
+```{r}
+stat_test <- compare_means(compare_tissue_GCF0620, 'tissue_type')
+stat_test %>% print(n=24)
+```
+
+```{r fig.height=8, fig.width=10}
+my_comparisons <- list(c("CLM\nn=20", "mLu\nn=15"),
+                       c("CLM\nn=20", "PM\nn=5"),
+                       c("mLu\nn=15", "PM\nn=5"))
+
+plot_boxplot(compare_tissue_GCF0620, 'tissue_type', nrow=2, my_comparisons, stat_test = stat_test)
+```
+plot_boxplot <- function(data, ind_var, nrow = 1, comparison = list(), only_significant = list(), custom_palette = NULL, save_path = NULL, fig_width = 6, fig_height = 4) {
+
+```{r fig.height=4, fig.width=9}
+my_comparisons <- list(c("CLM\nn=20", "mLu\nn=15"),
+                       c("CLM\nn=20", "PM\nn=5"),
+                       c("mLu\nn=15", "PM\nn=5"))
+
+significant_cells <- pull_sig(stat_test)
+print(significant_cells)
+
+plot_boxplot(compare_tissue_GCF0620, 'tissue_type', nrow=2, my_comparisons, c("Uncharacterized", significant_cells), 
+             save_path =  "/Users/eirikhoy/Dropbox/deconv_metastasis/figures/EPIC_cell_fractions_metastatic_site_v3.pdf", fig_width = 14, fig_height = 8, stat_test=stat_test)
+```
+
+```{r}
+plot_boxplot(compare_tissue_GCF0620, 'tissue_type', nrow=1, my_comparisons, c("B cells", "CAFs", "Endothelial cells"), stat_test=stat_test)
+
+```
+
+
+
+#### GCF0506 KRAS BRAF WT 
+
+```{r}
+compare_mutation_GCF0506 <- epi %>%
+  filter(batch == "GCF0506") %>%
+    mutate(cell_type = case_when(
+    cell_type == "Cancer associated fibroblast" ~ "CAFs",
+    cell_type == "B cell" ~ "B cells",
+    cell_type == "Endothelial cell" ~ "Endothelial cells",
+    cell_type == "uncharacterized cell" ~ "Uncharacterized",
+    TRUE ~ cell_type
+  )) %>% 
+  group_by(`KRAS/BRAF status`) %>%
+  mutate(n = length(unique(sample_name))) %>%
+  ungroup() %>%
+  mutate(KRAS_BRAF = paste0(`KRAS/BRAF status`, "\n", "n=", n)) %>% 
+  mutate(KRAS_BRAF = as.factor(KRAS_BRAF))
+
+compare_mutation_GCF0506
+```
+
+```{r}
+stat_test <- compare_means(compare_mutation_GCF0506, 'KRAS_BRAF')
+stat_test %>% print(n=24)
+
+```
+
+
+```{r fig.height=8, fig.width=10}
+my_comparisons <- list(c("KRAS\nn=10", "BRAF\nn=10"),
+                       c("KRAS\nn=10", "WT\nn=10"),
+                       c("BRAF\nn=10", "WT\nn=10"))
+
+plot_boxplot(compare_mutation_GCF0506, 'KRAS_BRAF', nrow=2, my_comparisons, stat_test=stat_test)
+
+```
+
+
+```{r fig.height=4, fig.width=3}
+my_comparisons <- list(c("KRAS\nn=10", "BRAF\nn=10"),
+                       c("KRAS\nn=10", "WT\nn=10"),
+                       c("BRAF\nn=10", "WT\nn=10"))
+
+significant_cells <- pull_sig(stat_test)
+print(significant_cells)
+
+plot_boxplot(compare_mutation_GCF0506, 'KRAS_BRAF', nrow=1, my_comparisons, significant_cells, stat_test=stat_test)
+
+```
+
+
+
+
+
+
+#### GCF0506 Consensus Molecular Subtypes
+
+
+
+```{r}
+compare_CMS_GCF0506 <- epi %>%
+  filter(batch == "GCF0506") %>%
+  mutate(cell_type = case_when(
+    cell_type == "Cancer associated fibroblast" ~ "CAFs",
+    cell_type == "T cell CD4+" ~ "CD4+ T cells",
+    cell_type == "uncharacterized cell" ~ "Uncharacterized",
+    TRUE ~ cell_type
+  )) %>%
+  mutate(`CMS_merge_123` = factor(case_when(
+    CMS == "CMS1" ~ "CMS1/2/3",
+    CMS == "CMS2" ~ "CMS1/2/3",
+    CMS == "CMS3" ~ "CMS1/2/3",
+    TRUE ~ CMS
+  ), levels=c("CMS1/2/3" , "CMS4"))) %>%
+  filter(CMS_merge_123 %in% c("CMS1/2/3","CMS4")) %>%
+  group_by(CMS_merge_123) %>%
+  mutate(n = length(unique(sample_name))) %>%
+  ungroup() %>%
+  mutate(CMS_merge_123 = paste0(CMS_merge_123, "\n n=", n)) %>%
+  mutate(CMS_merge_123 = as.factor(CMS_merge_123))
+
+compare_CMS_GCF0506
+```
+
+```{r}
+stat_test <- compare_means(compare_CMS_GCF0506, 'CMS_merge_123')
+stat_test
+```
+
+
+```{r fig.height=8, fig.width=10}
+my_comparisons <- list(c("CMS1/2/3\n n=20", "CMS4\n n=9"))
+
+plot_boxplot(compare_CMS_GCF0506, 'CMS_merge_123', nrow=2, my_comparisons, stat_test=stat_test)
+```
+
+```{r fig.height=4, fig.width=9}
+my_comparisons <- list(c("CMS1/2/3\n n=20", "CMS4\n n=9"))
+
+significant_cells <- pull_sig(stat_test)
+print(significant_cells)
+
+plot_boxplot(compare_CMS_GCF0506, 'CMS_merge_123', nrow=1, my_comparisons, significant_cells, stat_test=stat_test)
+```
+
+```{r fig.height=4, fig.width=9}
+my_comparisons <- list(c("CMS1/2/3\n n=20", "CMS4\n n=9"))
+
+significant_cells <- pull_sig(stat_test)
+print(significant_cells)
+
+plot_boxplot(compare_CMS_GCF0506, 'CMS_merge_123', nrow=2, my_comparisons, c("Uncharacterized", "CAFs", "Endothelial cell", "Macrophage"), 
+             save_path =  "/Users/eirikhoy/Dropbox/deconv_metastasis/figures/EPIC_cell_fractions_CMS123_vs_4_v3.pdf", fig_width = 14, fig_height = 8, stat_test = stat_test)
+```
+
+```{r fig.height=4, fig.width=3}
+my_comparisons <- list(c("CMS1/2/3\n n=20", "CMS4\n n=9"))
+
+significant_cells <- pull_sig(stat_test)
+print(significant_cells)
+
+plot_boxplot(compare_CMS_GCF0506, 'CMS_merge_123', nrow=1, my_comparisons, c('NK cell'), stat_test=stat_test)
+```
+
+
+
+#### GCF0506 APC WT 
+
+```{r}
+compare_apc_GCF0506 <- epi %>%
+  filter(batch == "GCF0506") %>%
+    mutate(cell_type = case_when(
+    cell_type == "Cancer associated fibroblast" ~ "CAFs",
+    cell_type == "B cell" ~ "B cells",
+    cell_type == "Endothelial cell" ~ "Endothelial cells",
+    cell_type == "uncharacterized cell" ~ "Uncharacterized",
+    TRUE ~ cell_type
+  )) %>% 
+  group_by(`APC status`) %>%
+  mutate(n = length(unique(sample_name))) %>%
+  ungroup() %>%
+  mutate(APC = paste0(`APC status`, "\n", "n=", n)) %>% 
+  mutate(APC = as.factor(APC))
+
+compare_apc_GCF0506
+```
+
+```{r}
+stat_test <- compare_means(compare_apc_GCF0506, 'APC')
+stat_test
+
+```
+
+```{r fig.height=8, fig.width=10}
+my_comparisons <- list(c("mut\nn=6", "wt\nn=14"),
+                       c("mut\nn=6", "na\nn=10"),
+                       c("wt\nn=14", "na\nn=10"))
+
+plot_boxplot(compare_apc_GCF0506, 'APC', nrow=2, my_comparisons, stat_test=stat_test)
+
+```
+
+#### GCF0506 MSI MSS 
+
+```{r}
+compare_msi_mss_GCF0506 <- epi %>%
+  filter(batch == "GCF0506") %>%
+    mutate(cell_type = case_when(
+    cell_type == "Cancer associated fibroblast" ~ "CAFs",
+    cell_type == "B cell" ~ "B cells",
+    cell_type == "Endothelial cell" ~ "Endothelial cells",
+    cell_type == "uncharacterized cell" ~ "Uncharacterized",
+    TRUE ~ cell_type
+  )) %>% 
+  group_by(`MSI/MSS`) %>%
+  mutate(n = length(unique(sample_name))) %>%
+  ungroup() %>%
+  mutate(MSI_MSS = paste0(`MSI/MSS`, "\n", "n=", n)) %>% 
+  mutate(MSI_MSS = as.factor(MSI_MSS))
+
+compare_msi_mss_GCF0506
+```
+
+```{r}
+stat_test <- compare_means(compare_msi_mss_GCF0506, 'MSI_MSS')
+stat_test
+
+```
+
+```{r fig.height=8, fig.width=10}
+my_comparisons <- list(c("MSI\nn=3", "MSS\nn=27"))
+
+plot_boxplot(compare_msi_mss_GCF0506, 'MSI_MSS', nrow=2, my_comparisons, stat_test=stat_test)
+
+```
+
+
+
+
+#### GCF0620 KRAS BRAF WT 
+
+
+```{r}
+compare_mutation_GCF0620 <- epi %>%
+  filter(batch == "GCF0620") %>%
+    mutate(cell_type = case_when(
+    cell_type == "Cancer associated fibroblast" ~ "CAFs",
+    cell_type == "B cell" ~ "B cells",
+    cell_type == "Endothelial cell" ~ "Endothelial cells",
+    cell_type == "uncharacterized cell" ~ "Uncharacterized",
+    TRUE ~ cell_type
+  )) %>% 
+  group_by(`KRAS/BRAF status`) %>%
+  mutate(n = length(unique(sample_name))) %>%
+  ungroup() %>%
+  mutate(KRAS_BRAF = paste0(`KRAS/BRAF status`, "\n", "n=", n)) %>% 
+  mutate(KRAS_BRAF = as.factor(KRAS_BRAF))
+
+compare_mutation_GCF0620
+```
+
+```{r}
+stat_test <- compare_means(compare_mutation_GCF0620, 'KRAS_BRAF')
+stat_test
+
+```
+
+
+```{r fig.height=8, fig.width=10}
+my_comparisons <- list(c("KRAS\nn=16", "BRAF\nn=3"),
+                       c("KRAS\nn=16", "WT\nn=21"),
+                       c("BRAF\nn=3", "WT\nn=21"))
+
+significant_cells <- pull_sig(stat_test)
+print(significant_cells)
+
+plot_boxplot(compare_mutation_GCF0620, 'KRAS_BRAF', nrow=2, my_comparisons, stat_test=stat_test)
+
+```
+
+
+```{r}
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
